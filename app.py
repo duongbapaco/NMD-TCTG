@@ -1,65 +1,68 @@
 import streamlit as st
 import pandas as pd
-import easyocr
-import numpy as np
+import pytesseract
 from PIL import Image
+import os
 
-# OCR Reader (khởi tạo chỉ 1 lần)
-@st.cache_resource
-def load_reader():
-    return easyocr.Reader(['en'])
+st.title("📊 Dashboard Đọc & Tính Định Mức")
 
-reader = load_reader()
+# --- Upload file Excel ---
+uploaded_excel = st.file_uploader("📂 Upload file Excel", type=["xlsx", "xlsm"])
+df_meters = None
 
-st.set_page_config(page_title="Dashboard Công tơ NMĐ", layout="wide")
-
-st.title("📊 Dashboard Công tơ NMĐ - OCR & Định mức")
-
-# --- Upload file Excel danh sách công tơ ---
-uploaded_excel = st.file_uploader("📂 Tải lên file Excel danh sách công tơ", type=["xlsx"])
 if uploaded_excel:
     df_meters = pd.read_excel(uploaded_excel)
-    st.success("✅ Đã tải danh sách công tơ")
+    st.success("✅ Đã nạp dữ liệu Excel")
     st.dataframe(df_meters)
 
-# --- Upload ảnh công tơ ---
-uploaded_images = st.file_uploader("📸 Tải ảnh công tơ", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+# --- Upload ảnh ---
+uploaded_images = st.file_uploader("📸 Upload ảnh công tơ", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
-results = []
+df_results = pd.DataFrame()
 
-if uploaded_images and uploaded_excel:
+if uploaded_images:
+    results = []
     for img_file in uploaded_images:
-        image = Image.open(img_file)
-        st.image(image, caption=f"Ảnh: {img_file.name}", width=300)
-
-        # OCR
-        ocr_texts = reader.readtext(np.array(image), detail=0)
-        extracted_text = " ".join(ocr_texts)
-
-        results.append({"Ảnh": img_file.name, "Kết quả OCR": extracted_text})
-
+        img = Image.open(img_file)
+        text = pytesseract.image_to_string(img, lang="eng")  # Tạm OCR tiếng Anh, có thể đổi sang 'vie'
+        results.append({"Ảnh": img_file.name, "Giá trị đọc": text.strip()})
     df_results = pd.DataFrame(results)
+    st.success("✅ Đã OCR ảnh xong")
+    st.dataframe(df_results)
 
-    # Gộp với danh sách công tơ
-    df_final = pd.merge(df_meters, df_results, left_on="Tên công tơ", right_on="Ảnh", how="left")
+# --- Ghép dữ liệu ---
+if df_meters is not None:
+    st.subheader("🔍 Kiểm tra cột trong dữ liệu")
+    st.write("📊 Excel có cột:", df_meters.columns.tolist())
+    st.write("📸 OCR có cột:", df_results.columns.tolist())
 
-    # --- Tính toán định mức ---
-    if "Lượng nước" in df_final.columns and "Lượng khí" in df_final.columns:
-        df_final["Định mức (tấn/h)"] = (df_final["Lượng nước"].diff()) / df_final["Lượng khí"]
+    if "Tên công tơ" in df_meters.columns and "Ảnh" in df_results.columns:
+        df_final = pd.merge(
+            df_meters, df_results, left_on="Tên công tơ", right_on="Ảnh", how="left"
+        )
 
-        # Cảnh báo màu
-        def check_status(val):
-            if pd.isna(val):
-                return ""
-            return f"color: {'red' if val > 1.15 else 'green'}; font-weight:bold;"
+        # --- Tính định mức ---
+        if "Lượng nước" in df_final.columns and "Lượng khí" in df_final.columns:
+            df_final["Định mức (tấn/h)"] = (
+                df_final["Lượng nước"].diff() / df_final["Lượng khí"]
+            )
 
-        st.subheader("📑 Kết quả phân tích")
-        st.dataframe(df_final.style.applymap(check_status, subset=["Định mức (tấn/h)"]))
+            # --- Cảnh báo màu ---
+            def color_rate(val):
+                try:
+                    if val > 1.15:
+                        return "background-color: red; color: white;"
+                    else:
+                        return "background-color: green; color: white;"
+                except:
+                    return ""
 
-    # Xuất file
-    st.download_button(
-        "📥 Tải kết quả Excel",
-        df_final.to_excel(index=False, engine="openpyxl"),
-        file_name="ket_qua_ocr_dinh_muc.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+            st.subheader("📊 Kết quả cuối cùng")
+            st.dataframe(df_final.style.applymap(color_rate, subset=["Định mức (tấn/h)"]))
+        else:
+            st.error("⚠️ Excel chưa có đủ cột 'Lượng nước' và 'Lượng khí' để tính định mức")
+            df_final = df_meters.copy()
+
+    else:
+        st.error("⚠️ Không tìm thấy cột phù hợp để merge. Kiểm tra lại Excel và kết quả OCR.")
+        df_final = df_meters.copy()
